@@ -31,7 +31,7 @@ jobs:
         name: Build and push vote app
         uses: docker/build-push-action@v7
         with:
-          context: ./vote
+          context: vote
           file: ./vote/Dockerfile
           push: true
           tags: |
@@ -41,7 +41,7 @@ jobs:
         name: Build and push results app
         uses: docker/build-push-action@v7
         with:
-          context: ./results
+          context: results
           file: ./results/Dockerfile
           push: true
           tags: |
@@ -51,7 +51,7 @@ jobs:
         name: Build and push worker app
         uses: docker/build-push-action@v7
         with:
-          context: ./worker
+          context: worker
           file: ./worker/Dockerfile
           push: true
           tags: |
