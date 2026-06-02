@@ -130,7 +130,7 @@ jobs:
         # --- GitHub build provenance attestation ---
       - name: Attest build provenance
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4.1.0
         with:
           subject-name: ${{ env.IMAGE_PREFIX }}/${{ matrix.app }}
           subject-digest: ${{ steps.build.outputs.digest }}
