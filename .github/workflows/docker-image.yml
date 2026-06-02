@@ -8,35 +8,54 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Cancel superseded runs on the same PR/branch, but NEVER cancel a
+# release (tag) or main build mid-push — that could leave the registry
+# in a half-pushed state.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
 
 jobs:
   build:
     name: Build & Push ${{ matrix.app }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
-      packages: write
-      id-token: write # needed for sigstore signing
-      attestations: write # needed for build provenance
-    
+      packages: write          # push images to GHCR
+      id-token: write          # keyless cosign + attestation OIDC
+      attestations: write      # build provenance attestation
+      security-events: write   # upload Trivy SARIF to the Security tab
+
     strategy:
-      fail-fast: false # don't cancel siblings if one app fails
+      fail-fast: false         # one app failing shouldn't cancel the others
+      max-parallel: 2          # throttle concurrent GHCR blob uploads (eases 502s)
       matrix:
         app: [vote, result, worker, seed-data]
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.0
+        uses: actions/checkout@v5
 
-        # --- Docker infrastructure ---
+      # --- Docker infrastructure ---
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4.1.0
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.1.0
+        uses: docker/setup-buildx-action@v4
+
+      # GHCR rejects uppercase characters in image paths, and forks can
+      # have mixed-case owners — normalise to lowercase once, reuse everywhere.
+      - name: Compute image name
+        id: img
+        env:
+          REG: ${{ env.REGISTRY }}
+          OWNER: ${{ github.repository_owner }}
+          APP: ${{ matrix.app }}
+        run: echo "name=${REG}/${OWNER,,}/${APP}" >> "$GITHUB_OUTPUT"
 
       - name: Log into GHCR
         uses: docker/login-action@v4
@@ -45,89 +64,97 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- Smart, branch/tag-aware tagging ---
-      - name: Docker Metadata action
+      # --- Branch/tag-aware tags + labels ---
+      - name: Docker metadata
         id: meta
-        # You may pin to the exact commit or the version.
-        # uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9
-        uses: docker/metadata-action@v6.1.0
+        uses: docker/metadata-action@v6
         with:
-          # List of Docker images to use as base name for tags
-          images: ${{ ENV.IMAGE_PREFIX }}/${{ matrix.app }}
-          # List of tags as key-value pair attributes
+          images: ${{ steps.img.outputs.name }}
           tags: |
-            # semver tags from git tags: v1.2.3 → 1.2.3, 1.2, 1
+            # semver from git tags: v1.2.3 -> 1.2.3, 1.2, 1
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             # branch name for non-main branches
             type=ref,event=branch
-            # pr-42 for pull requests (never pushed to prod)
+            # pr-42 for pull requests
             type=ref,event=pr
             # short SHA always present
             type=sha,format=short
-          # List of custom labels
           labels: |
             org.opencontainers.image.title=${{ matrix.app }}
             org.opencontainers.image.vendor=YourOrg
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
-      - name: Build and push Docker images
-        id: build
-        uses: docker/build-push-action@v7.2.0
+      # --- 1) Build a single-arch image and load it locally. DO NOT push. ---
+      # This is the artifact we scan. Nothing reaches the registry until the
+      # gate below passes. (load: true cannot produce a multi-arch image, and
+      # provenance/sbom are intentionally omitted here — they aren't supported
+      # with the local docker exporter.)
+      - name: Build (amd64) for scanning
+        uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.app }}
           file: ./${{ matrix.app }}/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          # push only on main branch or tags, not on PRs
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # layer cache via GHCR — survives across runners
-          cache-from: type=registry,ref=${{ env.IMAGE_PREFIX }}/${{ matrix.app }}:cache
-          cache-to: type=registry,ref=${{ env.IMAGE_PREFIX }}/${{ matrix.app }}:cache,mode=max
-          # OCI provenance + SBOM baked into the image index
-          provenance: true
-          sbom: true
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ matrix.app }}:scan
+          cache-from: type=registry,ref=${{ steps.img.outputs.name }}:cache
 
-
-      # --- Vulnerability scan (fails build if critical CVEs found) ---
-      - name: Aqua Security Trivy
-        if: github.event_name != 'pull_request'
-        uses: aquasecurity/trivy-action@v0.36.0
+      # --- 2) THE GATE: fail the job here on CRITICAL/HIGH CVEs, before publish ---
+      - name: Trivy scan (gate)
+        uses: aquasecurity/trivy-action@0.36.0
         with:
-          # image reference (for backward compatibility)
-          image-ref: ${{ env.IMAGE_PREFIX }}/${{ matrix.app }}@${{ steps.build.outputs.digest }}
-          # exit code when vulnerabilities were found
+          image-ref: ${{ matrix.app }}:scan
           exit-code: 1
-          # severities of vulnerabilities to be displayed
           severity: CRITICAL,HIGH
-          # output format (table, json, template)
           format: sarif
-          # writes results to a file with the specified file name
           output: trivy-${{ matrix.app }}.sarif
-      - name: Upload Trivy scan results to GitHub Security tab
-        if: github.event_name != 'pull_request'
+
+      # Upload results even when the gate failed (always()), but only on
+      # real refs — PRs from forks can't write to the Security tab anyway.
+      - name: Upload Trivy SARIF
+        if: always() && github.event_name != 'pull_request'
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-${{ matrix.app }}.sarif
           category: trivy-${{ matrix.app }}
 
-      # --- Cosign signing (cryptographic proof of who built it) ---
+      # --- 3) Only reached if the scan passed. Build multi-arch + push. ---
+      # The amd64 layers built in step 1 are cached, so this only adds arm64.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.app }}
+          file: ./${{ matrix.app }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ steps.img.outputs.name }}:cache
+          cache-to: type=registry,ref=${{ steps.img.outputs.name }}:cache,mode=max
+          provenance: true
+          sbom: true
+
+      # --- Cryptographic signing (keyless via OIDC) ---
       - name: Install Cosign
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v4.1.0
-      - name: Sign image with Cosign (keyless via OIDC)
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign image (keyless)
         if: github.event_name != 'pull_request'
-        run: |
-          cosign sign --yes \
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.app }}@${{ steps.build.outputs.digest }}
-            
-        # --- GitHub build provenance attestation ---
+        env:
+          IMAGE: ${{ steps.img.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # --- GitHub build provenance attestation ---
       - name: Attest build provenance
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@v4.1.0
+        uses: actions/attest-build-provenance@v4
         with:
-          subject-name: ${{ env.IMAGE_PREFIX }}/${{ matrix.app }}
+          subject-name: ${{ steps.img.outputs.name }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
