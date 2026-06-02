@@ -104,7 +104,7 @@ jobs:
 
       # --- 2) THE GATE: fail the job here on CRITICAL/HIGH CVEs, before publish ---
       - name: Trivy scan (gate)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ matrix.app }}:scan
           exit-code: 1
