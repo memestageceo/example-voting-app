@@ -73,6 +73,7 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Build and push Docker images
+        id: build
         uses: docker/build-push-action@v7.2.0
         with:
           # layer cache via GHCR — survives across runners
@@ -110,3 +111,27 @@ jobs:
           format: sarif
           # writes results to a file with the specified file name
           output: trivy-${{ matrix.app }}.sarif
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-${{ matrix.app }}.sarif
+          category: trivy-${{ matrix.app }}
+
+      # --- Cosign signing (cryptographic proof of who built it) ---
+      - name: Install Cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v4.1.0
+      - name: Sign image with Cosign (keyless via OIDC)
+        if: github.event_name != 'pull_request'
+        run: |
+          cosign sign --yes \
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.app }}@${{ steps.build.outputs.digest }}
+            
+        # --- GitHub build provenance attestation ---
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.IMAGE_PREFIX }}/${{ matrix.app }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
