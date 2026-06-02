@@ -76,26 +76,21 @@ jobs:
         id: build
         uses: docker/build-push-action@v7.2.0
         with:
-          # layer cache via GHCR — survives across runners
-          # List of external cache sources for buildx (e.g., user/app:cache, type=local,src=path/to/dir)
-          cache-from: type=registry,ref=${{ env.IMAGE_PREFIX }}/${{ matrix.app }}:cache
-          # List of cache export destinations for buildx (e.g., user/app:cache, type=local,dest=path/to/dir)
-          cache-to: type=registry,ref=${{ env.IMAGE_PREFIX }}/${{ matrix.app }}:cache,mode=max
-          # Build's context is the set of files located in the specified PATH or URL
           context: ${{ matrix.app }}
-          # Path to the Dockerfile
           file: ./${{ matrix.app }}/Dockerfile
-          # List of metadata for an image
-          labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
-          # Generate provenance attestation for the build (shorthand for --attest=type=provenance)
-          provenance: true
-          # Push is a shorthand for --output=type=registry
-          # push only on main branch or tags, not on PRs.
+          # push only on main branch or tags, not on PRs
           push: ${{ github.event_name != 'pull_request' }}
-          # Generate SBOM attestation for the build (shorthand for --attest=type=sbom)
-          sbom: true
           tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # layer cache via GHCR — survives across runners
+          cache-from: type=registry,ref=${{ env.IMAGE_PREFIX }}/${{ matrix.app }}:cache
+          cache-to: type=registry,ref=${{ env.IMAGE_PREFIX }}/${{ matrix.app }}:cache,mode=max
+          # OCI provenance + SBOM baked into the image index
+          provenance: true
+          sbom: true
+
+
       # --- Vulnerability scan (fails build if critical CVEs found) ---
       - name: Aqua Security Trivy
         # You may pin to the exact commit or the version.
