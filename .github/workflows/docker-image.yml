@@ -1,32 +1,56 @@
 name: Docker Image CI
 
 on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
+
 jobs:
-  docker:
+  build:
+    name: Build & Push ${{ matrix.app }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      id-token: write # needed for sigstore signing
+      attestations: # needed for build provenance
+    
+    strategy:
+      fail-fast: faslse # don't cancel siblings if one app fails
+      matrix:
+        app: [vote, result, worker, seed-data]
 
     steps:
-      - uses: actions/checkout@v4.2.0
-      -
-        name: Login to Docker Hub
+      - name: Checkout
+        uses: actions/checkout@v4.2.0
+
+        # --- Docker infrastructure ---
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.1.0
+
+      - name: Log into GHCR
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      -
-        name: Set up QEMU
-        uses: docker/setup-qemu-action@v4.1.0
-      -
-        name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.1.0
-      -
-        name: Build and push vote app
+
+      # --- Smart, branch/tag-aware tagging ---
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+      # ----
+      - name: Build and push vote app
         uses: docker/build-push-action@v7.2.0
         with:
           context: vote
@@ -35,8 +59,7 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/vote:latest
             ghcr.io/${{ github.repository_owner }}/vote:${{ github.sha }}
-      -
-        name: Build and push result app
+      - name: Build and push result app
         uses: docker/build-push-action@v7.2.0
         with:
           context: result
