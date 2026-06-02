@@ -38,14 +38,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4.2.0
 
       # --- Docker infrastructure ---
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@v4.1.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v4.1.0
 
       # GHCR rejects uppercase characters in image paths, and forks can
       # have mixed-case owners — normalise to lowercase once, reuse everywhere.
@@ -67,7 +67,7 @@ jobs:
       # --- Branch/tag-aware tags + labels ---
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@v6.1.0
         with:
           images: ${{ steps.img.outputs.name }}
           tags: |
@@ -92,7 +92,7 @@ jobs:
       # provenance/sbom are intentionally omitted here — they aren't supported
       # with the local docker exporter.)
       - name: Build (amd64) for scanning
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v7.2.0
         with:
           context: ${{ matrix.app }}
           file: ./${{ matrix.app }}/Dockerfile
@@ -125,7 +125,7 @@ jobs:
       # The amd64 layers built in step 1 are cached, so this only adds arm64.
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v7.2.0
         with:
           context: ${{ matrix.app }}
           file: ./${{ matrix.app }}/Dockerfile
@@ -141,7 +141,7 @@ jobs:
       # --- Cryptographic signing (keyless via OIDC) ---
       - name: Install Cosign
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v4.1.0
 
       - name: Sign image (keyless)
         if: github.event_name != 'pull_request'
@@ -153,7 +153,7 @@ jobs:
       # --- GitHub build provenance attestation ---
       - name: Attest build provenance
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@v4.1.0
         with:
           subject-name: ${{ steps.img.outputs.name }}
           subject-digest: ${{ steps.build.outputs.digest }}
